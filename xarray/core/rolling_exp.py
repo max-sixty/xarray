@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Generic
+from numbers import Number
+from typing import Any, Generic, Hashable, Union, cast
 
 import numpy as np
 from packaging.version import Version
+from typing_extensions import reveal_type
 
+from xarray import DataArray, Dataset, Variable
 from xarray.core.computation import apply_ufunc
 from xarray.core.options import _get_keep_attrs
 from xarray.core.pdcompat import count_not_none
-from xarray.core.types import T_DataWithCoords
+from xarray.core.types import T_DataArrayOrSet, T_DataWithCoords
+from xarray.core.utils import V
 
 try:
     import numbagg
@@ -21,37 +25,72 @@ except ImportError:
 
 
 def _get_alpha(
-    comass: float | None = None,
-    span: float | None = None,
-    halflife: float | None = None,
-    alpha: float | None = None,
-) -> float:
+    obj: T_DataWithCoords,
+    # One of comass, span, halflife, or alpha must be supplied
+    # **kwargs: float | DataArray | Variable,
+    **kwargs: float | DataArray,
+) -> float | DataArray:
     """
     Convert comass, span, halflife to alpha.
-    """
-    valid_count = count_not_none(comass, span, halflife, alpha)
-    if valid_count > 1:
-        raise ValueError("comass, span, halflife, and alpha are mutually exclusive")
 
-    # Convert to alpha
-    if comass is not None:
-        if comass < 0:
-            raise ValueError("comass must satisfy: comass >= 0")
-        return 1 / (comass + 1)
-    elif span is not None:
-        if span < 1:
-            raise ValueError("span must satisfy: span >= 1")
-        return 2 / (span + 1)
-    elif halflife is not None:
-        if halflife <= 0:
-            raise ValueError("halflife must satisfy: halflife > 0")
-        return 1 - np.exp(np.log(0.5) / halflife)
-    elif alpha is not None:
-        if not 0 < alpha <= 1:
-            raise ValueError("alpha must satisfy: 0 < alpha <= 1")
-        return alpha
+    Only checks for invalid values if supplied with a number rather than an array;
+    otherwise it's too expensive and we rely on the user to check.
+    """
+
+    window_type, window = next(iter(kwargs.items()))
+    if next(iter(kwargs.values())) is not None:
+        raise ValueError(
+            f"Only one of `comass`, `span`, `halflife`, or `alpha` can be supplied, got {kwargs}"
+        )
+
+    if window_type not in ("comass", "span", "halflife", "alpha"):
+        raise ValueError(
+            f"window_type must be one of 'comass', 'span', 'halflife', or 'alpha', got {window_type}"
+        )
+
+    if isinstance(window, Number):
+        # Check for invalid values
+        if window_type == "comass":
+            if window < 0:
+                raise ValueError("comass must satisfy: comass >= 0")
+        if window_type == "span":
+            if window < 1:
+                raise ValueError("span must satisfy: span >= 1")
+        if window_type == "halflife":
+            if window <= 0:
+                raise ValueError("halflife must satisfy: halflife > 0")
+        if window_type == "alpha":
+            if not 0 < window <= 1:
+                raise ValueError("alpha must satisfy: 0 < alpha <= 1")
+
+    # It's a dimension name
+    elif isinstance(window, Hashable):
+        # if obj is None:
+        #     raise ValueError(
+        #         "If a dimension name is supplied, obj must be supplied too"
+        #     )
+        window = obj[window]
+
+    # It's an array
+    # if isinstance(window, (Variable, DataArray)):
+    if isinstance(window, (DataArray)):
+        # TODO: Actually we probably want to do downstream because for datasets we want
+        # to broadcast separately...
+        # if obj is None:
+        #     raise ValueError("If an array is supplied, obj must be supplied too")
+        window = window.broadcast_like(cast(Union[DataArray, Dataset], obj))
+
+    # Now we have either a number of an array, we can calculate alpha
+    if window_type == "comass":
+        return 1 / (window + 1)
+    elif window_type == "span":
+        return 2 / (window + 1)
+    elif window_type == "halflife":
+        return 1 - np.exp(np.log(0.5) / window)
+    elif window_type == "alpha":
+        return window
     else:
-        raise ValueError("Must pass one of comass, span, halflife, or alpha")
+        raise ValueError("unreachable")
 
 
 class RollingExp(Generic[T_DataWithCoords]):
@@ -98,8 +137,14 @@ class RollingExp(Generic[T_DataWithCoords]):
 
         self.obj: T_DataWithCoords = obj
         dim, window = next(iter(windows.items()))
+        if _NUMBAGG_VERSION < Version("0.6.2") and not isinstance(window, Number):
+            raise ImportError(
+                f"numbagg >= 0.6.2 is required for non-constant window values (as an array) within `.rolling_exp` but currently version {_NUMBAGG_VERSION} is installed"
+            )
         self.dim = dim
-        self.alpha = _get_alpha(**{window_type: window})
+        self.alpha = _get_alpha(
+            obj=cast(T_DataWithCoords, self), **{window_type: window}
+        )
         self.min_weight = min_weight
         # Don't pass min_weight=0 so we can support older versions of numbagg
         kwargs = dict(alpha=self.alpha, axis=-1)
