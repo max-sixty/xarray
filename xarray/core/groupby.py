@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import itertools
 import math
 import warnings
 from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
@@ -760,9 +761,9 @@ class GroupBy(Generic[T_Xarray]):
         from xarray.groupers import BinGrouper
 
         obj = self._original_obj
-        (grouper,) = self.groupers
-        name = grouper.name
-        isbin = isinstance(grouper.grouper, BinGrouper)
+        any_isbin = any(
+            isinstance(grouper.grouper, BinGrouper) for grouper in self.groupers
+        )
 
         if keep_attrs is None:
             keep_attrs = _get_keep_attrs(default=True)
@@ -790,15 +791,25 @@ class GroupBy(Generic[T_Xarray]):
                 # set explicitly to avoid unnecessarily accumulating count
                 kwargs["min_count"] = 0
 
-        unindexed_dims: tuple[Hashable, ...] = tuple()
-        if isinstance(grouper.group, _DummyGroup) and not isbin:
-            unindexed_dims = (name,)
+        unindexed_dims: tuple[Hashable, ...] = (
+            grouper.name
+            for grouper in self.groupers
+            if isinstance(grouper.group, _DummyGroup)
+            and not isinstance(grouper.grouper, BinGrouper)
+        )
 
         parsed_dim: tuple[Hashable, ...]
         if isinstance(dim, str):
             parsed_dim = (dim,)
         elif dim is None:
-            parsed_dim = grouper.group.dims
+            parsed_dim_list = list()
+            # preserve order
+            for dim_ in itertools.chain(
+                *(grouper.group.dims for grouper in self.groupers)
+            ):
+                if dim_ not in parsed_dim_list:
+                    parsed_dim_list.append(dim_)
+            parsed_dim = tuple(parsed_dim_list)
         elif dim is ...:
             parsed_dim = tuple(obj.dims)
         else:
@@ -806,12 +817,15 @@ class GroupBy(Generic[T_Xarray]):
 
         # Do this so we raise the same error message whether flox is present or not.
         # Better to control it here than in flox.
-        if any(d not in grouper.group.dims and d not in obj.dims for d in parsed_dim):
-            raise ValueError(f"cannot reduce over dimensions {dim}.")
+        for grouper in self.groupers:
+            if any(
+                d not in grouper.group.dims and d not in obj.dims for d in parsed_dim
+            ):
+                raise ValueError(f"cannot reduce over dimensions {dim}.")
 
         if kwargs["func"] not in ["all", "any", "count"]:
             kwargs.setdefault("fill_value", np.nan)
-        if isbin and kwargs["func"] == "count":
+        if any_isbin and kwargs["func"] == "count":
             # This is an annoying hack. Xarray returns np.nan
             # when there are no observations in a bin, instead of 0.
             # We can fake that here by forcing min_count=1.
@@ -820,13 +834,16 @@ class GroupBy(Generic[T_Xarray]):
             kwargs.setdefault("fill_value", np.nan)
             kwargs.setdefault("min_count", 1)
 
-        output_index = grouper.full_index
+        # pass RangeIndex as a hint to flox that `by` is already factorized
+        expected_groups = tuple(
+            pd.RangeIndex(len(grouper)) for grouper in self.groupers
+        )
+
         result = xarray_reduce(
             obj.drop_vars(non_numeric.keys()),
-            self._codes,
+            *self._codes,
             dim=parsed_dim,
-            # pass RangeIndex as a hint to flox that `by` is already factorized
-            expected_groups=(pd.RangeIndex(len(output_index)),),
+            expected_groups=expected_groups,
             isbin=False,
             keep_attrs=keep_attrs,
             **kwargs,
@@ -834,15 +851,20 @@ class GroupBy(Generic[T_Xarray]):
 
         # we did end up reducing over dimension(s) that are
         # in the grouped variable
-        group_dims = grouper.group.dims
-        if set(group_dims).issubset(set(parsed_dim)):
+        group_dims: set[str | Hashable] = set(
+            itertools.chain(*(grouper.group.dims for grouper in self.groupers))
+        )
+        if group_dims.issubset(set(parsed_dim)):
+            new_coords = {}
+            new_indexes = {}
+            for grouper in self.groupers:
+                output_index = grouper.full_index
+                name = grouper.name
+                new_coords[name] = (name, np.array(output_index))
+                new_indexes[name] = PandasIndex(output_index, dim=name)
             result = result.assign_coords(
-                Coordinates(
-                    coords={name: (name, np.array(output_index))},
-                    indexes={name: PandasIndex(output_index, dim=name)},
-                )
-            )
-            result = result.drop_vars(unindexed_dims)
+                Coordinates(new_coords, new_indexes)
+            ).drop_vars(unindexed_dims)
 
         # broadcast and restore non-numeric data variables (backcompat)
         for name, var in non_numeric.items():
