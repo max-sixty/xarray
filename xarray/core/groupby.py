@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import functools
+import math
 import warnings
 from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -68,10 +70,11 @@ def check_reduce_dims(reduce_dims, dimensions):
             )
 
 
-def _codes_to_group_indices(inverse: np.ndarray, N: int) -> GroupIndices:
-    assert inverse.ndim == 1
+def _codes_to_group_indices(codes: np.ndarray, N: int) -> GroupIndices:
+    """Converts integer codes for groups to group indices."""
+    assert codes.ndim == 1
     groups: GroupIndices = tuple([] for _ in range(N))
-    for n, g in enumerate(inverse):
+    for n, g in enumerate(codes):
         if g >= 0:
             groups[g].append(n)
     return groups
@@ -448,7 +451,7 @@ class GroupBy(Generic[T_Xarray]):
         "_codes",
     )
     _obj: T_Xarray
-    groupers: tuple[ResolvedGrouper]
+    groupers: tuple[ResolvedGrouper, ...]
     _restore_coord_dims: bool
 
     _original_obj: T_Xarray
@@ -464,7 +467,7 @@ class GroupBy(Generic[T_Xarray]):
     def __init__(
         self,
         obj: T_Xarray,
-        groupers: tuple[ResolvedGrouper],
+        groupers: tuple[ResolvedGrouper, ...],
         restore_coord_dims: bool = True,
     ) -> None:
         """Create a GroupBy object
@@ -483,16 +486,35 @@ class GroupBy(Generic[T_Xarray]):
 
         self._original_obj = obj
 
-        (grouper,) = self.groupers
-        self._original_group = grouper.group
+        if len(groupers) > 1:
+            for grouper in groupers:
+                if grouper.group.ndim > 1:
+                    raise NotImplementedError(
+                        "Only grouping by multiple 1D variables is supported at the moment."
+                    )
+        (grouper, *_) = self.groupers  # FIXME
+        self._original_group = grouper.group  # FIXME
 
         # specification for the groupby operation
-        self._obj = grouper.stacked_obj
+        self._obj = grouper.stacked_obj  # FIXME
         self._restore_coord_dims = restore_coord_dims
 
-        # These should generalize to multiple groupers
-        self._group_indices = grouper.group_indices
-        self._codes = self._maybe_unstack(grouper.codes)
+        self._shape = tuple(grouper.size for grouper in groupers)
+        self._len = math.prod(self._shape)
+
+        self._codes = tuple(self._maybe_unstack(grouper.codes) for grouper in groupers)
+        self._flatcodes = np.ravel_multi_index(self._codes, self._shape, mode="wrap")
+        # NaNs; as well as values outside the bins are coded by -1
+        # Restore these after the raveling
+        mask = functools.reduce(np.logical_or, [(code == -1) for code in self._codes])
+        self._flatcodes[mask] = -1
+
+        if len(groupers) == 1:
+            # For ordered `group` we index into the array using slices.
+            # Preserve this optimization when grouping by a single variable
+            self._group_indices = self.groupers[0].group_indices
+        else:
+            self._group_indices = _codes_to_group_indices(self._flatcodes, self._len)
 
         (self._group_dim,) = grouper.group1d.dims
         # cached attributes
@@ -566,13 +588,16 @@ class GroupBy(Generic[T_Xarray]):
         return zip(grouper.unique_coord.data, self._iter_grouped())
 
     def __repr__(self) -> str:
-        (grouper,) = self.groupers
-        return "{}, grouped over {!r}\n{!r} groups with labels {}.".format(
-            self.__class__.__name__,
-            grouper.name,
-            grouper.full_index.size,
-            ", ".join(format_array_flat(grouper.full_index, 30).split()),
+        text = (
+            f"<{self.__class__.__name__}, "
+            f"grouped over {len(self.groupers)} grouper(s),"
+            f" {self._len} groups in total:"
         )
+        for grouper in self.groupers:
+            coord = grouper.unique_coord
+            labels = ", ".join(format_array_flat(coord, 30).split())
+            text += f"\n\t{grouper.name!r}: {coord.size} groups with labels {labels}"
+        return text + ">"
 
     def _iter_grouped(self) -> Iterator[T_Xarray]:
         """Iterate over each element in this group"""
@@ -609,7 +634,7 @@ class GroupBy(Generic[T_Xarray]):
         obj = self._original_obj
         name = grouper.name
         group = grouper.group
-        codes = self._codes
+        (codes,) = self._codes
         dims = group.dims
 
         if isinstance(group, _DummyGroup):
@@ -709,15 +734,16 @@ class GroupBy(Generic[T_Xarray]):
     def _maybe_unstack(self, obj):
         """This gets called if we are applying on an array with a
         multidimensional group."""
-        (grouper,) = self.groupers
-        stacked_dim = grouper.stacked_dim
-        inserted_dims = grouper.inserted_dims
-        if stacked_dim is not None and stacked_dim in obj.dims:
-            obj = obj.unstack(stacked_dim)
-            for dim in inserted_dims:
-                if dim in obj.coords:
-                    del obj.coords[dim]
-            obj._indexes = filter_indexes_from_coords(obj._indexes, set(obj.coords))
+        # TODO: Is this really right?
+        for grouper in self.groupers:
+            stacked_dim = grouper.stacked_dim
+            if stacked_dim is not None and stacked_dim in obj.dims:
+                inserted_dims = grouper.inserted_dims
+                obj = obj.unstack(stacked_dim)
+                for dim in inserted_dims:
+                    if dim in obj.coords:
+                        del obj.coords[dim]
+                obj._indexes = filter_indexes_from_coords(obj._indexes, set(obj.coords))
         return obj
 
     def _flox_reduce(
@@ -1115,12 +1141,10 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
         return self._obj._replace_maybe_drop_dims(reordered)
 
     def _restore_dim_order(self, stacked: DataArray) -> DataArray:
-        (grouper,) = self.groupers
-        group = grouper.group1d
-
         def lookup_order(dimension):
-            if dimension == grouper.name:
-                (dimension,) = group.dims
+            for grouper in self.groupers:
+                if dimension == grouper.name and grouper.group.ndim == 1:
+                    (dimension,) = grouper.group.dims
             if dimension in self._obj.dims:
                 axis = self._obj.get_axis_num(dimension)
             else:
@@ -1128,7 +1152,10 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
             return axis
 
         new_order = sorted(stacked.dims, key=lookup_order)
-        return stacked.transpose(*new_order, transpose_coords=self._restore_coord_dims)
+        stacked = stacked.transpose(
+            *new_order, transpose_coords=self._restore_coord_dims
+        )
+        return stacked
 
     def map(
         self,

@@ -556,27 +556,28 @@ repr_da = xr.DataArray(
 @pytest.mark.parametrize("obj", [repr_da, repr_da.to_dataset(name="a")])
 def test_groupby_repr(obj, dim) -> None:
     actual = repr(obj.groupby(dim))
-    expected = f"{obj.__class__.__name__}GroupBy"
-    expected += f", grouped over {dim!r}"
-    expected += f"\n{len(np.unique(obj[dim]))!r} groups with labels "
+    N = len(np.unique(obj[dim]))
+    expected = f"<{obj.__class__.__name__}GroupBy"
+    expected += f", grouped over 1 grouper(s), {N} groups in total:"
+    expected += f"\n\t{dim!r}: {N} groups with labels "
     if dim == "x":
-        expected += "1, 2, 3, 4, 5."
+        expected += "1, 2, 3, 4, 5>"
     elif dim == "y":
-        expected += "0, 1, 2, 3, 4, 5, ..., 15, 16, 17, 18, 19."
+        expected += "0, 1, 2, 3, 4, 5, ..., 15, 16, 17, 18, 19>"
     elif dim == "z":
-        expected += "'a', 'b', 'c'."
+        expected += "'a', 'b', 'c'>"
     elif dim == "month":
-        expected += "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12."
+        expected += "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12>"
     assert actual == expected
 
 
 @pytest.mark.parametrize("obj", [repr_da, repr_da.to_dataset(name="a")])
 def test_groupby_repr_datetime(obj) -> None:
     actual = repr(obj.groupby("t.month"))
-    expected = f"{obj.__class__.__name__}GroupBy"
-    expected += ", grouped over 'month'"
-    expected += f"\n{len(np.unique(obj.t.dt.month))!r} groups with labels "
-    expected += "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12."
+    expected = f"<{obj.__class__.__name__}GroupBy"
+    expected += ", grouped over 1 grouper(s), 12 groups in total:\n"
+    expected += "\t'month': 12 groups with labels "
+    expected += "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12>"
     assert actual == expected
 
 
@@ -2561,3 +2562,18 @@ def test_custom_grouper() -> None:
             obj.groupby("time.year", time=YearGrouper())
         with pytest.raises(ValueError):
             obj.groupby()
+
+
+def test_multiple_groupers() -> None:
+    da = xr.DataArray(
+        np.array([1, 2, 3, 0, 2, np.nan]),
+        dims="d",
+        coords=dict(
+            labels1=("d", np.array(["a", "b", "c", "c", "b", "a"])),
+            labels2=("d", np.array(["x", "y", "z", "z", "y", "x"])),
+        ),
+    )
+
+    gb = da.groupby(labels1=UniqueGrouper(), labels2=UniqueGrouper())
+    repr(gb)
+    gb.mean()
