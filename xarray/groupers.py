@@ -111,11 +111,14 @@ class UniqueGrouper(Grouper):
     def group_as_index(self) -> pd.Index:
         """Caches the group DataArray as a pandas Index."""
         if self._group_as_index is None:
-            self._group_as_index = self.group.to_index()
+            if self.group.ndim == 1:
+                self._group_as_index = self.group.to_index()
+            else:
+                self._group_as_index = pd.Index(self.group.data.ravel())
         return self._group_as_index
 
-    def factorize(self, group1d: T_Group) -> EncodedGroups:
-        self.group = group1d
+    def factorize(self, group: T_Group) -> EncodedGroups:
+        self.group = group
 
         index = self.group_as_index
         is_unique_and_monotonic = isinstance(self.group, _DummyGroup) or (
@@ -138,7 +141,7 @@ class UniqueGrouper(Grouper):
             raise ValueError(
                 "Failed to group data. Are you grouping by a variable that is all NaN?"
             )
-        codes = self.group.copy(data=codes_)
+        codes = self.group.copy(data=codes_.reshape(self.group.shape))
         unique_coord = Variable(
             dims=codes.name, data=unique_values, attrs=self.group.attrs
         )
@@ -231,7 +234,7 @@ class BinGrouper(Grouper):
         data = np.asarray(group.data)  # Cast _DummyGroup data to array
 
         binned, self.bins = pd.cut(  # type: ignore [call-overload]
-            data,
+            data.ravel(),
             bins=self.bins,
             right=self.right,
             labels=self.labels,
@@ -254,7 +257,9 @@ class BinGrouper(Grouper):
         unique_values = full_index[uniques[uniques != -1]]
 
         codes = DataArray(
-            binned_codes, getattr(group, "coords", None), name=new_dim_name
+            binned_codes.reshape(group.shape),
+            getattr(group, "coords", None),
+            name=new_dim_name,
         )
         unique_coord = Variable(
             dims=new_dim_name, data=unique_values, attrs=group.attrs
@@ -373,7 +378,7 @@ class TimeResampler(Resampler):
         unique_coord = Variable(
             dims=group.name, data=first_items.index, attrs=group.attrs
         )
-        codes = group.copy(data=codes_)
+        codes = group.copy(data=codes_.reshape(group.shape))
 
         return EncodedGroups(
             codes=codes,

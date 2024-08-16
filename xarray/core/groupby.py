@@ -328,7 +328,7 @@ class ResolvedGrouper(Generic[T_DataWithCoords]):
         return self.group1d.dims
 
     def factorize(self) -> None:
-        encoded = self.grouper.factorize(self.group1d)
+        encoded = self.grouper.factorize(self.group)
 
         self.codes = encoded.codes
         self.full_index = encoded.full_index
@@ -338,7 +338,9 @@ class ResolvedGrouper(Generic[T_DataWithCoords]):
         else:
             self.group_indices = tuple(
                 g
-                for g in _codes_to_group_indices(self.codes.data, len(self.full_index))
+                for g in _codes_to_group_indices(
+                    self.codes.data.ravel(), len(self.full_index)
+                )
                 if g
             )
         if encoded.unique_coord is None:
@@ -500,7 +502,7 @@ class GroupBy(Generic[T_Xarray]):
         self._shape = tuple(grouper.size for grouper in groupers)
         self._len = math.prod(self._shape)
 
-        self._codes = tuple(self._maybe_unstack(grouper.codes) for grouper in groupers)
+        self._codes = tuple(grouper.codes for grouper in groupers)
         self._flatcodes = np.ravel_multi_index(self._codes, self._shape, mode="wrap")
         # NaNs; as well as values outside the bins are coded by -1
         # Restore these after the raveling
