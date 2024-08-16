@@ -1730,7 +1730,7 @@ class TestDataArrayGroupBy:
         rev = array_rev.groupby("idx", squeeze=False)
 
         for gb in [fwd, rev]:
-            assert all([isinstance(elem, slice) for elem in gb._group_indices])
+            assert all([isinstance(elem, slice) for elem in gb.encoded.group_indices])
 
         with xr.set_options(use_flox=use_flox):
             assert_identical(fwd.sum(), array)
@@ -2564,16 +2564,56 @@ def test_custom_grouper() -> None:
             obj.groupby()
 
 
-def test_multiple_groupers() -> None:
-    da = xr.DataArray(
+@pytest.mark.parametrize("use_flox", [True, False])
+def test_multiple_groupers(use_flox) -> None:
+    da = DataArray(
         np.array([1, 2, 3, 0, 2, np.nan]),
         dims="d",
         coords=dict(
             labels1=("d", np.array(["a", "b", "c", "c", "b", "a"])),
             labels2=("d", np.array(["x", "y", "z", "z", "y", "x"])),
         ),
+        name="foo",
     )
 
     gb = da.groupby(labels1=UniqueGrouper(), labels2=UniqueGrouper())
     repr(gb)
-    gb.mean()
+
+    expected = DataArray(
+        np.array([[1.0, np.nan, np.nan], [np.nan, 2.0, np.nan], [np.nan, np.nan, 1.5]]),
+        dims=("labels1", "labels2"),
+        coords={
+            "labels1": np.array(["a", "b", "c"], dtype=object),
+            "labels2": np.array(["x", "y", "z"], dtype=object),
+        },
+        name="foo",
+    )
+    with xr.set_options(use_flox=use_flox):
+        actual = gb.mean()
+    assert_identical(actual, expected)
+
+    # -------
+    coords = {"a": ("x", [0, 0, 1, 1]), "b": ("y", [0, 0, 1, 1])}
+    square = DataArray(np.arange(16).reshape(4, 4), coords=coords, dims=["x", "y"])
+    gb = square.groupby(a=UniqueGrouper(), b=UniqueGrouper())
+    repr(gb)
+    actual = gb.mean()
+    expected = DataArray(
+        np.array([[2.5, 4.5], [10.5, 12.5]]),
+        dims=("a", "b"),
+        coords={"a": [0, 1], "b": [0, 1]},
+    )
+    assert_identical(actual, expected)
+
+    assert_identical(
+        square.groupby(x=UniqueGrouper(), y=UniqueGrouper()).mean(),
+        # TODO: is this dropping sensible?
+        square.astype(np.float64).drop_vars(("a", "b")),
+    )
+    # ------
+
+
+# Possible property tests
+# 1. lambda x: x
+# 2. grouped-reduce on unique coords is identical to array
+# 3. group_over == groupby-reduce along other dimensions

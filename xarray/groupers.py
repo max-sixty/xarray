@@ -16,6 +16,7 @@ import pandas as pd
 
 from xarray.coding.cftime_offsets import _new_to_legacy_freq
 from xarray.core import duck_array_ops
+from xarray.core.coordinates import Coordinates
 from xarray.core.dataarray import DataArray
 from xarray.core.groupby import T_Group, _DummyGroup
 from xarray.core.indexes import safe_cast_to_index
@@ -35,7 +36,16 @@ __all__ = [
 RESAMPLE_DIM = "__resample_dim__"
 
 
-@dataclass
+def _coordinates_from_variable(variable: Variable) -> Coordinates:
+    from xarray.core.indexes import create_default_index_implicit
+
+    new_index, index_vars = create_default_index_implicit(variable)
+    indexes = {k: new_index for k in index_vars}
+    new_vars = new_index.create_variables()
+    return Coordinates(new_vars, indexes)
+
+
+@dataclass(init=False)
 class EncodedGroups:
     """
     Dataclass for storing intermediate values for GroupBy operation.
@@ -57,18 +67,45 @@ class EncodedGroups:
 
     codes: DataArray
     full_index: pd.Index
-    group_indices: GroupIndices | None = field(default=None)
-    unique_coord: Variable | _DummyGroup | None = field(default=None)
+    group_indices: GroupIndices
+    unique_coord: Variable | _DummyGroup
+    coords: Coordinates
 
-    def __post_init__(self):
-        assert isinstance(self.codes, DataArray)
-        if self.codes.name is None:
+    def __init__(
+        self,
+        codes: DataArray,
+        full_index: pd.Index,
+        group_indices: GroupIndices | None = None,
+        unique_coord: Variable | _DummyGroup | None = None,
+        coords: Coordinates | None = None,
+    ):
+        from xarray.core.groupby import _codes_to_group_indices
+
+        assert isinstance(codes, DataArray)
+        if codes.name is None:
             raise ValueError("Please set a name on the array you are grouping by.")
-        assert isinstance(self.full_index, pd.Index)
-        assert (
-            isinstance(self.unique_coord, Variable | _DummyGroup)
-            or self.unique_coord is None
-        )
+        self.codes = codes
+        assert isinstance(full_index, pd.Index)
+        self.full_index = full_index
+
+        if group_indices is None:
+            self.group_indices = tuple(
+                g
+                for g in _codes_to_group_indices(codes.data.ravel(), len(full_index))
+                if g
+            )
+        else:
+            self.group_indices = group_indices
+
+        if unique_coord is None:
+            unique_values = full_index[np.unique(codes)]
+            self.unique_coord = Variable(
+                dims=codes.name, data=unique_values, attrs=codes.attrs
+            )
+        else:
+            self.unique_coord = unique_coord
+
+        self.coords = coords or Coordinates()
 
 
 class Grouper(ABC):
@@ -114,7 +151,7 @@ class UniqueGrouper(Grouper):
             if self.group.ndim == 1:
                 self._group_as_index = self.group.to_index()
             else:
-                self._group_as_index = pd.Index(self.group.data.ravel())
+                self._group_as_index = pd.Index(np.array(self.group).ravel())
         return self._group_as_index
 
     def factorize(self, group: T_Group) -> EncodedGroups:
@@ -148,7 +185,10 @@ class UniqueGrouper(Grouper):
         full_index = pd.Index(unique_values)
 
         return EncodedGroups(
-            codes=codes, full_index=full_index, unique_coord=unique_coord
+            codes=codes,
+            full_index=full_index,
+            unique_coord=unique_coord,
+            coords=_coordinates_from_variable(unique_coord),
         )
 
     def _factorize_dummy(self) -> EncodedGroups:
@@ -173,6 +213,7 @@ class UniqueGrouper(Grouper):
             group_indices=group_indices,
             full_index=full_index,
             unique_coord=unique_coord,
+            coords=Coordinates(),
         )
 
 
@@ -265,7 +306,10 @@ class BinGrouper(Grouper):
             dims=new_dim_name, data=unique_values, attrs=group.attrs
         )
         return EncodedGroups(
-            codes=codes, full_index=full_index, unique_coord=unique_coord
+            codes=codes,
+            full_index=full_index,
+            unique_coord=unique_coord,
+            coords=_coordinates_from_variable(unique_coord),
         )
 
 
@@ -385,6 +429,7 @@ class TimeResampler(Resampler):
             group_indices=group_indices,
             full_index=full_index,
             unique_coord=unique_coord,
+            coords=_coordinates_from_variable(unique_coord),
         )
 
 

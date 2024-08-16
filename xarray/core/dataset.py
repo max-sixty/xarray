@@ -10383,6 +10383,7 @@ class Dataset(
             groupers = either_dict_or_kwargs(group, groupers, "groupby")  # type: ignore
             group = None
 
+        rgroupers: tuple[ResolvedGrouper, ...]
         if group is not None:
             if groupers:
                 raise ValueError(
