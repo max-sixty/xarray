@@ -535,6 +535,7 @@ class GroupBy(Generic[T_Xarray]):
         Dataset.sizes
         """
         if self._sizes is None:
+            self._raise_if_not_single_group()
             (grouper,) = self.groupers
             index = self._group_indices[0]
             self._sizes = self._obj.isel({self._group_dim: index}).sizes
@@ -562,6 +563,12 @@ class GroupBy(Generic[T_Xarray]):
     ) -> T_Xarray:
         raise NotImplementedError()
 
+    def _raise_if_not_single_group(self):
+        if len(self.groupers) != 1:
+            raise NotImplementedError(
+                "This method is not supported for grouping by multiple variables yet."
+            )
+
     @property
     def groups(self) -> dict[GroupKey, GroupIndex]:
         """
@@ -569,6 +576,7 @@ class GroupBy(Generic[T_Xarray]):
         """
         # provided to mimic pandas.groupby
         if self._groups is None:
+            self._raise_if_not_single_group()
             (grouper,) = self.groupers
             self._groups = dict(zip(grouper.unique_coord.values, self._group_indices))
         return self._groups
@@ -577,14 +585,15 @@ class GroupBy(Generic[T_Xarray]):
         """
         Get DataArray or Dataset corresponding to a particular group label.
         """
+        self._raise_if_not_single_group()
         (grouper,) = self.groupers
         return self._obj.isel({self._group_dim: self.groups[key]})
 
     def __len__(self) -> int:
-        (grouper,) = self.groupers
-        return grouper.size
+        return self._len
 
     def __iter__(self) -> Iterator[tuple[GroupKey, T_Xarray]]:
+        self._raise_if_not_single_group()
         (grouper,) = self.groupers
         return zip(grouper.unique_coord.data, self._iter_grouped())
 
@@ -602,13 +611,14 @@ class GroupBy(Generic[T_Xarray]):
 
     def _iter_grouped(self) -> Iterator[T_Xarray]:
         """Iterate over each element in this group"""
-        (grouper,) = self.groupers
+        self._raise_if_not_single_group()
         for idx, indices in enumerate(self._group_indices):
             yield self._obj.isel({self._group_dim: indices})
 
     def _infer_concat_args(self, applied_example):
         from xarray.groupers import BinGrouper
 
+        self._raise_if_not_single_group()
         (grouper,) = self.groupers
         if self._group_dim in applied_example.dims:
             coord = grouper.group1d
@@ -631,6 +641,7 @@ class GroupBy(Generic[T_Xarray]):
 
         g = f if not reflexive else lambda x, y: f(y, x)
 
+        self._raise_if_not_single_group()
         (grouper,) = self.groupers
         obj = self._original_obj
         name = grouper.name
@@ -723,12 +734,14 @@ class GroupBy(Generic[T_Xarray]):
         """
         from xarray.groupers import BinGrouper, TimeResampler
 
-        (grouper,) = self.groupers
-        if (
-            isinstance(grouper.grouper, BinGrouper | TimeResampler)
-            and grouper.name in combined.dims
-        ):
-            indexers = {grouper.name: grouper.full_index}
+        indexers = {}
+        for grouper in self.groupers:
+            if (
+                isinstance(grouper.grouper, BinGrouper | TimeResampler)
+                and grouper.name in combined.dims
+            ):
+                indexers[grouper.name] = grouper.full_index
+        if indexers:
             combined = combined.reindex(**indexers)
         return combined
 
@@ -1033,6 +1046,7 @@ class GroupBy(Generic[T_Xarray]):
            The American Statistician, 50(4), pp. 361-365, 1996
         """
         if dim is None:
+            self._raise_if_not_single_group()
             (grouper,) = self.groupers
             dim = grouper.group1d.dims
 
@@ -1135,6 +1149,7 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
     @property
     def dims(self) -> tuple[Hashable, ...]:
         if self._dims is None:
+            self._raise_if_not_single_group()
             (grouper,) = self.groupers
             index = self._group_indices[0]
             self._dims = self._obj.isel({self._group_dim: index}).dims
@@ -1144,6 +1159,7 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
         """Fast version of `_iter_grouped` that yields Variables without
         metadata
         """
+        self._raise_if_not_single_group()
         var = self._obj.variable
         (grouper,) = self.groupers
         for idx, indices in enumerate(self._group_indices):
@@ -1157,7 +1173,7 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
         # TODO: benbovy - explicit indexes: this fast implementation doesn't
         # create an explicit index for the stacked dim coordinate
         stacked = Variable.concat(applied, dim, shortcut=True)
-
+        self._raise_if_not_single_group()
         (grouper,) = self.groupers
         reordered = _maybe_reorder(stacked, dim, positions, N=grouper.group.size)
         return self._obj._replace_maybe_drop_dims(reordered)
@@ -1254,6 +1270,7 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
             combined = self._concat_shortcut(applied, dim, positions)
         else:
             combined = concat(applied, dim)
+            self._raise_if_not_single_group()
             (grouper,) = self.groupers
             combined = _maybe_reorder(combined, dim, positions, N=grouper.group.size)
 
@@ -1346,6 +1363,7 @@ class DatasetGroupByBase(GroupBy["Dataset"], DatasetGroupbyArithmetic):
     @property
     def dims(self) -> Frozen[Hashable, int]:
         if self._dims is None:
+            self._raise_if_not_single_group()
             (grouper,) = self.groupers
             index = self._group_indices[0]
             self._dims = self._obj.isel({self._group_dim: index}).dims
@@ -1413,6 +1431,7 @@ class DatasetGroupByBase(GroupBy["Dataset"], DatasetGroupbyArithmetic):
         applied_example, applied = peek_at(applied)
         coord, dim, positions = self._infer_concat_args(applied_example)
         combined = concat(applied, dim)
+        self._raise_if_not_single_group()
         (grouper,) = self.groupers
         combined = _maybe_reorder(combined, dim, positions, N=grouper.group.size)
         # assign coord when the applied function does not return that coord
