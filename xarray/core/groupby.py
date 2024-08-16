@@ -447,7 +447,6 @@ class GroupBy(Generic[T_Xarray]):
         "_sizes",
         # Save unstacked object for flox
         "_original_obj",
-        "_original_group",
         "_bins",
         "_codes",
     )
@@ -456,7 +455,6 @@ class GroupBy(Generic[T_Xarray]):
     _restore_coord_dims: bool
 
     _original_obj: T_Xarray
-    _original_group: T_Group
     _group_indices: GroupIndices
     _codes: DataArray
     _group_dim: Hashable
@@ -494,7 +492,6 @@ class GroupBy(Generic[T_Xarray]):
                         "Only grouping by multiple 1D variables is supported at the moment."
                     )
         (grouper, *_) = self.groupers  # FIXME
-        self._original_group = grouper.group  # FIXME
 
         # specification for the groupby operation
         self._obj = grouper.stacked_obj  # FIXME
