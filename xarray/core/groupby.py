@@ -25,7 +25,6 @@ from xarray.core.coordinates import Coordinates
 from xarray.core.formatting import format_array_flat
 from xarray.core.indexes import (
     PandasIndex,
-    create_default_index_implicit,
     filter_indexes_from_coords,
 )
 from xarray.core.options import OPTIONS, _get_keep_attrs
@@ -626,7 +625,6 @@ class GroupBy(Generic[T_Xarray]):
                 yield self._obj.isel({self._group_dim: indices})
 
     def _infer_concat_args(self, applied_example):
-        from xarray.groupers import BinGrouper
 
         if self._group_dim in applied_example.dims:
             coord = self.group1d
@@ -635,16 +633,7 @@ class GroupBy(Generic[T_Xarray]):
             coord = self.encoded.unique_coord
             positions = None
         (dim,) = coord.dims
-
-        # FIXME
-        if len(self.groupers) == 1:
-            (grouper,) = self.groupers
-            if isinstance(grouper.group, _DummyGroup) and not isinstance(
-                grouper.grouper, BinGrouper
-            ):
-                # When binning we actually do set the index
-                coord = None
-        return coord, dim, positions
+        return dim, positions
 
     def _binary_op(self, other, f, reflexive=False):
         from xarray.core.dataarray import DataArray
@@ -767,7 +756,9 @@ class GroupBy(Generic[T_Xarray]):
                 if dim in obj.coords:
                     del obj.coords[dim]
             obj._indexes = filter_indexes_from_coords(obj._indexes, set(obj.coords))
-        if len(self.groupers) > 1:
+        elif len(self.groupers) > 1:
+            # if multiple groupers all share the same single dimension, then
+            # we don't stack/unstack. Do that manually now.
             obj = obj.unstack(*self.encoded.unique_coord.dims)
         return obj
 
@@ -1271,7 +1262,7 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
     def _combine(self, applied, shortcut=False):
         """Recombine the applied objects like the original."""
         applied_example, applied = peek_at(applied)
-        coord, dim, positions = self._infer_concat_args(applied_example)
+        dim, positions = self._infer_concat_args(applied_example)
         if shortcut:
             combined = self._concat_shortcut(applied, dim, positions)
         else:
@@ -1284,7 +1275,7 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
             # only restore dimension order for arrays
             combined = self._restore_dim_order(combined)
         # assign coord and index when the applied function does not return that coord
-        if coord is not None and dim not in applied_example.dims:
+        if dim not in applied_example.dims:
             combined = combined.assign_coords(self.encoded.coords)
         combined = self._maybe_unstack(combined)
         combined = self._maybe_restore_empty_groups(combined)
@@ -1432,16 +1423,12 @@ class DatasetGroupByBase(GroupBy["Dataset"], DatasetGroupbyArithmetic):
     def _combine(self, applied):
         """Recombine the applied objects like the original."""
         applied_example, applied = peek_at(applied)
-        coord, dim, positions = self._infer_concat_args(applied_example)
+        dim, positions = self._infer_concat_args(applied_example)
         combined = concat(applied, dim)
-        self._raise_if_not_single_group()
-        (grouper,) = self.groupers
-        combined = _maybe_reorder(combined, dim, positions, N=grouper.group.size)
+        combined = _maybe_reorder(combined, dim, positions, N=self.group1d.size)
         # assign coord when the applied function does not return that coord
-        if coord is not None and dim not in applied_example.dims:
-            index, index_vars = create_default_index_implicit(coord)
-            indexes = {k: index for k in index_vars}
-            combined = combined._overwrite_indexes(indexes, index_vars)
+        if dim not in applied_example.dims:
+            combined = combined.assign_coords(self.encoded.coords)
         combined = self._maybe_unstack(combined)
         combined = self._maybe_restore_empty_groups(combined)
         return combined
