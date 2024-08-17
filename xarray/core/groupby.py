@@ -1049,7 +1049,7 @@ class GroupBy(Generic[T_Xarray]):
            The American Statistician, 50(4), pp. 361-365, 1996
         """
         if dim is None:
-            dim = self._group_dim
+            dim = (self._group_dim,)
 
         # Dataset.quantile does this, do it for flox to ensure same output.
         q = np.asarray(q, dtype=np.float64)

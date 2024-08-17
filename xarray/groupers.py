@@ -106,6 +106,7 @@ class EncodedGroups:
             self.unique_coord = unique_coord
 
         if coords is None:
+            assert not isinstance(self.unique_coord, _DummyGroup)
             self.coords = _coordinates_from_variable(self.unique_coord)
         else:
             self.coords = coords
