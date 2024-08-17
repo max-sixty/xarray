@@ -284,7 +284,7 @@ We can use this to group by multiple dimensions:
 
     from xarray.groupers import UniqueGrouper
 
-    da.groupby(lat=UniqueGrouper(), lon=UniqueGrouper()).sum()
+    da.groupby(ny=UniqueGrouper(), nx=UniqueGrouper()).sum()
 
 Similarly,
 
