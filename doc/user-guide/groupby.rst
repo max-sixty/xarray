@@ -282,6 +282,7 @@ We can use this to group by multiple dimensions:
 
 .. ipython:: python
 
+    from xarray.groupers import UniqueGrouper
     ds.groupby(lat=UniqueGrouper(), lon=UniqueGrouper()).sum()
 
 Similarly,
