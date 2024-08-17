@@ -2597,7 +2597,8 @@ def test_multiple_groupers(use_flox) -> None:
     square = DataArray(np.arange(16).reshape(4, 4), coords=coords, dims=["x", "y"])
     gb = square.groupby(a=UniqueGrouper(), b=UniqueGrouper())
     repr(gb)
-    actual = gb.mean()
+    with xr.set_options(use_flox=use_flox):
+        actual = gb.mean()
     expected = DataArray(
         np.array([[2.5, 4.5], [10.5, 12.5]]),
         dims=("a", "b"),
@@ -2605,11 +2606,15 @@ def test_multiple_groupers(use_flox) -> None:
     )
     assert_identical(actual, expected)
 
-    assert_identical(
-        square.groupby(x=UniqueGrouper(), y=UniqueGrouper()).mean(),
-        # TODO: is this dropping sensible?
-        square.astype(np.float64).drop_vars(("a", "b")),
-    )
+    with xr.set_options(use_flox=use_flox):
+        assert_identical(
+            square.groupby(x=UniqueGrouper(), y=UniqueGrouper()).mean(),
+            square.astype(np.float64).drop_vars(("a", "b")),
+        )
+
+    # gb = square.groupby(x=UniqueGrouper(), y=UniqueGrouper())
+    # gb - gb.mean()
+
     # ------
 
 

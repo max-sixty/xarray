@@ -523,6 +523,19 @@ class GroupBy(Generic[T_Xarray]):
                         "Only grouping by multiple 1D variables is supported at the moment."
                     )
             self.encoded = ComposedGrouper(groupers).factorize()
+            grouper_dims = set(
+                itertools.chain(*tuple(grouper.group.dims for grouper in groupers))
+            )
+            grouper_names = set(grouper.group.name for grouper in groupers)
+            # Drop any non-dim coords that we are not grouping by;
+            # even if they share dims with the group variables.
+            # This mirrors our behaviour for the single grouper case.
+            to_drop = tuple(
+                name
+                for name in (set(obj.coords) - set(obj.xindexes))
+                if name not in grouper_names and set(obj[name].dims) & grouper_dims
+            )
+            obj = obj.drop_vars(to_drop)
 
         # specification for the groupby operation
         # TODO: handle obj having variables that are not present on any of the groupers
