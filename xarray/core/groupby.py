@@ -1049,9 +1049,7 @@ class GroupBy(Generic[T_Xarray]):
            The American Statistician, 50(4), pp. 361-365, 1996
         """
         if dim is None:
-            self._raise_if_not_single_group()
-            (grouper,) = self.groupers
-            dim = self.group1d.dims
+            dim = self._group_dim
 
         # Dataset.quantile does this, do it for flox to ensure same output.
         q = np.asarray(q, dtype=np.float64)
@@ -1267,9 +1265,7 @@ class DataArrayGroupByBase(GroupBy["DataArray"], DataArrayGroupbyArithmetic):
             combined = self._concat_shortcut(applied, dim, positions)
         else:
             combined = concat(applied, dim)
-            self._raise_if_not_single_group()
-            (grouper,) = self.groupers
-            combined = _maybe_reorder(combined, dim, positions, N=grouper.group.size)
+            combined = _maybe_reorder(combined, dim, positions, N=self.group1d.size)
 
         if isinstance(combined, type(self._obj)):
             # only restore dimension order for arrays
@@ -1358,7 +1354,6 @@ class DatasetGroupByBase(GroupBy["Dataset"], DatasetGroupbyArithmetic):
     @property
     def dims(self) -> Frozen[Hashable, int]:
         if self._dims is None:
-            self._raise_if_not_single_group()
             index = self.encoded.group_indices[0]
             self._dims = self._obj.isel({self._group_dim: index}).dims
 
