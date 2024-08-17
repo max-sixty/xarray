@@ -105,7 +105,10 @@ class EncodedGroups:
         else:
             self.unique_coord = unique_coord
 
-        self.coords = coords or Coordinates()
+        if coords is None:
+            self.coords = _coordinates_from_variable(self.unique_coord)
+        else:
+            self.coords = coords
 
 
 class Grouper(ABC):
